@@ -1,5 +1,6 @@
 package com.example.speechrecognisation
 
+import android.R
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -9,15 +10,24 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.util.Log
 import android.view.MotionEvent
 import android.view.View
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.fragment.app.strictmode.Violation
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.speechrecognisation.databinding.ActivityMainBinding
+import com.example.speechrecognisation.viewmodel.SpeechViewModel
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
@@ -25,8 +35,48 @@ class MainActivity : AppCompatActivity() {
     private val binding: ActivityMainBinding
         get() = _binding!!
 
+    private lateinit var textToSpeech: TextToSpeech
+
+    //    private lateinit var viewModel: SpeechViewModel
+    private lateinit var viewModel: SpeechViewModel
+    var selectedLanguage = "Hindi"
     private val speechRecognizer: SpeechRecognizer by lazy {
         SpeechRecognizer.createSpeechRecognizer(this)
+    }
+    val languages = listOf(
+        "English",
+        "Hindi",
+        "Tamil",
+        "Telugu",
+        "Kannada"
+    )
+    private fun getLocale(language: String): Locale {
+
+        return when (language) {
+
+            "English" -> Locale.US
+
+            "Hindi" -> Locale("hi", "IN")
+
+            "Tamil" -> Locale("ta", "IN")
+
+            "Telugu" -> Locale("te", "IN")
+
+            "Bengali" -> Locale("bn", "IN")
+
+            "Marathi" -> Locale("mr", "IN")
+
+            "Gujarati" -> Locale("gu", "IN")
+
+            "Kannada" -> Locale("kn", "IN")
+
+            "Malayalam" -> Locale("ml", "IN")
+
+            "Punjabi" -> Locale("pa", "IN")
+            else -> {
+                    Locale.US
+            }
+        }
     }
 
     private val permissionAllowed =
@@ -45,6 +95,78 @@ class MainActivity : AppCompatActivity() {
         _binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        viewModel = SpeechViewModel()
+        textToSpeech = TextToSpeech(this) { status ->
+
+            if (status == TextToSpeech.SUCCESS) {
+                textToSpeech.language = Locale.US
+                val voices = textToSpeech.voices.find {
+                    it.name == "en-in-x-end-local"
+                }
+                if (voices != null) {
+                    textToSpeech.voice = voices
+                }
+//                check how many language is available for speek in gemini
+//                voices.forEach {
+//                    Log.d("TTS_VOICE", "Voice: ${it.name}")
+//                }
+            }
+        }
+
+        val adapter = ArrayAdapter(
+            this,
+            R.layout.simple_dropdown_item_1line,
+            languages
+        )
+        binding.userSpeak.setOnClickListener {
+
+            textToSpeech.language = Locale.US
+
+            textToSpeech.speak(
+                binding.userText.text.toString(),
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "original_text"
+            )
+        }
+        binding.aiSpeak.setOnClickListener {
+
+            val locale = getLocale(selectedLanguage)
+            val result = textToSpeech.setLanguage(locale)
+
+            if (result == TextToSpeech.LANG_MISSING_DATA ||
+                result == TextToSpeech.LANG_NOT_SUPPORTED
+            ) {
+                Toast.makeText(
+                    this,
+                    "This language is not supported",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                return@setOnClickListener
+            }
+
+            textToSpeech.speak(
+                binding.translatedText.text.toString(),
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "translated_text"
+            )
+        }
+
+        binding.languageAutoComplete.setAdapter(adapter)
+
+        binding.languageAutoComplete.setOnItemClickListener { _, _, position, _ ->
+
+            selectedLanguage = languages[position]
+
+            Toast.makeText(
+                this,
+                selectedLanguage,
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
         binding.floatingBtn.setOnTouchListener { view, motionEvent ->
             when (motionEvent.action) {
                 MotionEvent.ACTION_UP -> {
@@ -60,7 +182,7 @@ class MainActivity : AppCompatActivity() {
                         binding.micAnimation.startAnimation()
                         binding.micAnimation.visibility = View.VISIBLE
                         binding.floatingBtn.visibility = View.GONE
-                        startListening()
+                        startListening(selectedLanguage)
                     }
                     return@setOnTouchListener true
                 }
@@ -70,9 +192,19 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+
+                viewModel.translatedText.collect { translatedText ->
+
+                    binding.translatedText.text = translatedText
+                }
+            }
+        }
     }
 
-    fun startListening() {
+    fun startListening(selectedLanguage: String) {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
         intent.putExtra(
             RecognizerIntent.EXTRA_LANGUAGE_MODEL,
@@ -98,9 +230,27 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onReadyForSpeech(p0: Bundle?) {}
 
-                override fun onResults(build: Bundle?) {
-                    val result = build?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    binding.userText.text = result?.get(0) ?: "No result"
+                override fun onResults(results: Bundle?) {
+
+                    val text = results
+                        ?.getStringArrayList(
+                            SpeechRecognizer.RESULTS_RECOGNITION
+                        )
+                        ?.firstOrNull()
+
+                    if (!text.isNullOrBlank()) {
+
+                        binding.userText.text = text
+
+                        // Send recognized text to Gemini
+                        viewModel.translate(
+                            text = text,
+                            targetLanguage = selectedLanguage
+//                            targetLanguage = "Hindi"
+                        )
+                    } else {
+                        binding.userText.text = "No result"
+                    }
                 }
 
                 override fun onRmsChanged(p0: Float) {
